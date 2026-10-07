@@ -1,0 +1,80 @@
+name: Build TWRP recovery (TB310FU)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq build-essential git python3 repo libxml2-utils \
+            zip unzip cpio rsync bc liblz4-tool zstd
+
+      - name: Configure git
+        run: |
+          git config --global user.name "SmartPiglet CI"
+          git config --global user.email "ci@users.noreply.github.com"
+
+      - name: Init TWRP 12.1 minimal manifest
+        run: |
+          mkdir -p $HOME/twrp
+          cd $HOME/twrp
+          repo init -u https://github.com/minimal-manifest-twrp/platform_manifest_twrp_aosp.git -b twrp-12.1
+
+      - name: Repo sync
+        run: |
+          cd $HOME/twrp
+          repo sync -c -j$(nproc --all) --force-sync --no-clone-bundle --no-tags
+
+      - name: Add device tree
+        run: |
+          cd $HOME/twrp
+          mkdir -p device/lenovo
+          rsync -a --exclude '.git' "$GITHUB_WORKSPACE/device/lenovo/m9" device/lenovo/
+          find device/lenovo/m9 -maxdepth 2 | head -40
+
+      - name: Build recoveryimage
+        run: |
+          cd $HOME/twrp
+          export ALLOW_MISSING_DEPENDENCIES=true
+          export LC_ALL=C
+          set +e
+          source build/envsetup.sh
+          lunch twrp_m9-eng
+          mka recoveryimage -j$(nproc --all)
+          echo "build exit: $?"
+          ls -l out/target/product/m9/ 2>/dev/null
+
+      - name: Verify image
+        if: always()
+        run: |
+          cd $HOME/twrp
+          IMG=out/target/product/m9/recovery.img
+          if [ ! -f "$IMG" ]; then echo "NO IMAGE PRODUCED"; exit 1; fi
+          python3 "$GITHUB_WORKSPACE/tools/verify_recovery.py" "$IMG"
+          sha256sum "$IMG" | tee "$GITHUB_WORKSPACE/recovery.img.sha256"
+
+      - name: Upload artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: TWRP-recovery-tb310fu
+          path: |
+            /home/runner/twrp/out/target/product/m9/recovery.img
+            /home/runner/twrp/out/target/product/m9/*.img
+          if-no-files-found: warn
+          retention-days: 90
+
+      - name: Upload build log tail on failure
+        if: failure()
+        run: |
+          cd $HOME/twrp
+          tail -200 out/verbose.log.gz 2>/dev/null | gzip -dc 2>/dev/null | tail -200 || true
