@@ -41,17 +41,22 @@ jobs:
           rsync -a --exclude '.git' "$GITHUB_WORKSPACE/device/lenovo/m9" device/lenovo/
           find device/lenovo/m9 -maxdepth 2 | head -40
 
-      - name: Build recoveryimage
+      - name: Build recovery image
         run: |
           cd $HOME/twrp
           export ALLOW_MISSING_DEPENDENCIES=true
           export LC_ALL=C
-          set +e
           source build/envsetup.sh
           lunch twrp_m9-eng
-          mka recoveryimage -j$(nproc --all)
-          echo "build exit: $?"
-          ls -l out/target/product/m9/ 2>/dev/null
+          # This device has NO recovery partition (BOARD_USES_RECOVERY_AS_BOOT := true).
+          # build/make/core/board_config.mk therefore sets BUILDING_RECOVERY_IMAGE=true and
+          # leaves INSTALLED_RECOVERYIMAGE_TARGET empty, so the "recoveryimage" goal is a
+          # no-op. core/Makefile attaches the recovery recipe to INSTALLED_BOOTIMAGE_TARGET
+          # instead, so the correct goal is the boot image.
+          mka bootimage -j$(nproc --all)
+          ls -l out/target/product/m9/
+          test -s out/target/product/m9/boot.img
+          cp -v out/target/product/m9/boot.img out/target/product/m9/recovery.img
 
       - name: Verify image
         if: always()
@@ -69,12 +74,13 @@ jobs:
           name: TWRP-recovery-tb310fu
           path: |
             /home/runner/twrp/out/target/product/m9/recovery.img
-            /home/runner/twrp/out/target/product/m9/*.img
+            /home/runner/twrp/out/target/product/m9/boot.img
           if-no-files-found: warn
           retention-days: 90
 
-      - name: Upload build log tail on failure
+      - name: Upload verbose build log on failure
         if: failure()
         run: |
           cd $HOME/twrp
-          tail -200 out/verbose.log.gz 2>/dev/null | gzip -dc 2>/dev/null | tail -200 || true
+          ls -l out/verbose.log.gz 2>/dev/null || true
+          zcat out/verbose.log.gz 2>/dev/null | grep -iE "error|failed|no rule" | tail -120 || true
